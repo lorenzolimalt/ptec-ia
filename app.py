@@ -8,7 +8,7 @@ import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from decimal import Decimal
-from datetime import date, datetime
+from datetime import date, datetime, time
 import uuid
 import logging
 
@@ -55,12 +55,13 @@ def get_db_connection():
         host="localhost", 
         database="ptec_db", 
         user="postgres", 
-        password="lima"
+        password="pdinfinita"
     )
 
 def normalize_value(v):
     if isinstance(v, Decimal): return float(v)
     if isinstance(v, (datetime, date)): return v.isoformat()
+    if isinstance(v, time): return v.strftime('%H:%M:%S')
     if isinstance(v, uuid.UUID): return str(v)
     return v
 
