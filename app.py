@@ -1,10 +1,14 @@
 from flask import Flask, request, jsonify
+import jwt
+from functools import wraps
 import psycopg2
 import psycopg2.extras
 import requests
 import json
 import re
 import urllib3
+import os
+from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from decimal import Decimal
@@ -13,6 +17,7 @@ import uuid
 import logging
 
 app = Flask(__name__)
+load_dotenv()
 
 # ==============================================================================
 # CONFIGURAÇÃO E LOGS
@@ -28,6 +33,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 IA_URL = "https://mycoach-2.tksol.com.br/v1/chat/completions"
 API_KEY = "" 
 MODEL_NAME = "llama-4-maverick"
+
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALGORITHM = "HS256"
 
 # Whitelist de Tabelas
 # LISTA COMPLETA DE TABELAS PERMITIDAS (Baseada no Dump)
@@ -53,9 +61,9 @@ ALLOWED_TABLES = {
 def get_db_connection():
     return psycopg2.connect(
         host="localhost", 
-        database="ptec_db", 
-        user="postgres", 
-        password="lima"
+        database="pd_backoffice", 
+        user="admin", 
+        password="asdd"
     )
 
 def normalize_value(v):
@@ -84,7 +92,7 @@ def is_safe_sql(sql: str) -> bool:
     if any(re.search(rf"\b{cmd}\b", sql_upper) for cmd in forbidden_cmds):
         return False
 
-    # 2. REMOÇÃO DE RUÍDO (EXTRACT, SUBSTRING, ETC) - AQUI ESTÁ A CORREÇÃO
+    # 2. REMOÇÃO DE RUÍDO (EXTRACT, SUBSTRING, ETC)
     # Remove trechos como "EXTRACT(MONTH FROM data)" para que o "FROM" dali não confunda o regex
     sql_for_check = re.sub(r"EXTRACT\s*\(.*?\)", "", sql_clean, flags=re.IGNORECASE)
     sql_for_check = re.sub(r"SUBSTRING\s*\(.*?\)", "", sql_for_check, flags=re.IGNORECASE)
@@ -133,6 +141,41 @@ def call_ai_service(messages, temperature=0):
     except Exception as e:
         logger.error(f"Exceção fatal na chamada IA: {str(e)}")
         return None
+
+def jwt_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization")
+
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Token não fornecido"}), 401
+
+        token = auth_header.split(" ")[1]
+
+        try:
+            payload = jwt.decode(
+                token,
+                JWT_SECRET,
+                algorithms=[JWT_ALGORITHM],
+                options={"verify_signature": True, "verify_sub": False}
+            )
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Token expirado"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Token inválido"}), 401
+
+        request.user = {
+            "user_id": payload.get("sub"),
+            "tenant_city_id": payload.get("tenant_city_id"),
+            "roles": payload.get("roles", [])
+        }
+
+        if not request.user["user_id"] or not request.user["tenant_city_id"]:
+            return jsonify({"error": "Token incompleto"}), 401
+
+        return f(*args, **kwargs)
+
+    return decorated
 
 # ==============================================================================
 # PROMPT DO SISTEMA
@@ -221,11 +264,14 @@ Use estes ALIAS e JOINS exatos:
 # ==============================================================================
 
 @app.route("/chat", methods=["POST"])
+@jwt_required
 def chat():
     data = request.json or {}
-    user_msg = data.get("message")
-    user_id = data.get("user_id")
-    tenant_id = data.get("tenant_city_id")
+    user_msg = data.get("message")  
+    
+    user_id = request.user["user_id"]
+    tenant_id = request.user["tenant_city_id"]
+    roles = request.user["roles"]
 
     if not all([user_msg, user_id, tenant_id]):
         return jsonify({"error": "Parâmetros obrigatórios ausentes"}), 400
