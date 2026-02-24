@@ -1,1 +1,96 @@
 
+# =============================================
+# .dockerignore - Flask + Python + Gunicorn
+# =============================================
+
+# Git e versionamento
+.git
+.gitignore
+.gitattributes
+.github/
+
+# Ambientes virtuais locais (nunca copie venv)
+venv/
+.venv/
+env/
+ENV/
+.env
+.env.*
+.venv.bak
+env.bak
+
+# Bytecode e cache Python (sempre recriados)
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Logs e arquivos temporários
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# Artefatos de build e distribuição
+dist/
+build/
+*.egg
+*.egg-info/
+.eggs/
+MANIFEST
+
+# IDEs e editores locais
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.project
+.pydevproject
+*.code-workspace
+
+# Docker e Compose locais (não precisa copiar)
+docker-compose.yml
+docker-compose.override.yml
+docker-compose.dev.yml
+docker-compose.prod.yml
+Dockerfile*
+.dockerignore
+
+# Arquivos sensíveis (não devem entrar na imagem)
+secrets/
+*.key
+*.pem
+*.crt
+*.csr
+*.jks
+*.secrets
+*.secret
+config.yaml
+config.json  # se tiver credenciais
+
+# Testes e dados locais
+tests/
+test/
+data/
+migrations/  # se usar alembic e não quiser copiar migrações antigas
+*.sqlite3
+*.db
+*.db-journal
+
+# Outros comuns
+.DS_Store
+Thumbs.db
+npm-debug.log
+yarn-debug.log
+yarn-error.log
