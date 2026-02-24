@@ -8,46 +8,48 @@ LABEL description="PtecIA Flask Application"
 # Define o diretório de trabalho dentro do container
 WORKDIR /app
 
-# Define variáveis de ambiente (Formato corrigido: VAR=valor)
-# Isso evita avisos de "LegacyKeyValueFormat" durante o build
+# Define variáveis de ambiente fixas (não secrets)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Instala dependências do sistema (gcc para compilação de pacotes python)
+# Instala dependências mínimas do sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Cria um usuário não-root para rodar a aplicação (segurança)
+# Cria usuário não-root (boa prática de segurança)
 RUN useradd -m -u 1000 appuser
 
-# Copia o arquivo de requirements e instala as dependências
+# Copia e instala dependências primeiro (camada de cache otimizada)
 COPY requirements.txt .
-
-# Instala dependências do requirements.txt E o gunicorn explicitamente
-# Instalamos o gunicorn separadamente para garantir a existência do binário mesmo se ele faltar no .txt
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir gunicorn
 
-# Copia o restante do código da aplicação já definindo o dono (appuser)
-# O uso de --chown aqui evita comandos CHOWN separados, otimizando o tamanho da imagem
+# Copia o .env (contém variáveis sensíveis)
+# Atenção: só faça isso se for ambiente de desenvolvimento ou CI específico
+# Em produção → use Docker secrets, --env-file ou variáveis no compose / swarm / kubernetes
+COPY --chown=appuser:appuser .env .
+
+# Copia todo o restante do código (já com o dono correto)
 COPY --chown=appuser:appuser . .
 
-# Troca para o usuário não-root
+# Muda para usuário não-root
 USER appuser
 
-# Expõe a porta interna do Flask (Padrão 5000)
+# Expõe a porta que o Flask/Gunicorn vai usar
 EXPOSE 5000
 
-# Healthcheck: Verifica se a aplicação está respondendo a cada 30s
+# Healthcheck simples (ajuste a rota se sua app usa outra)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:5000/ || exit 1
 
-# Comando para rodar a aplicação usando Gunicorn
-# IMPORTANTE: Substitua 'app:app' pelo seu arquivo:variavel
-# Ex: Se seu arquivo é main.py e a instância é application, use 'main:application'
-# --access-logfile e --error-logfile com "-" envia logs para o stdout do Docker
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+# Comando de inicialização com gunicorn
+# Ajuste 'app:app' → nome_do_seu_arquivo:nome_da_variavel_flask
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", \
+     "--workers", "2", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "app:app"]
