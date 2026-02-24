@@ -20,7 +20,9 @@ from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import urllib3
+from dotenv import load_dotenv
 
+load_dotenv("/app/.env")
 # ==============================================================================
 # 1. CONFIGURAÇÃO INICIAL E AMBIENTE
 # ==============================================================================
