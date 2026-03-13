@@ -12,7 +12,7 @@ from flask_cors import CORS
 
 from config import pg_pool
 from database import get_db_connection, release_db_connection, clean_sql, is_safe_sql, execute_with_cache
-from auth import jwt_required, rate_limit, get_user_is_admin, get_user_name
+from auth import jwt_required, rate_limit, get_user_is_admin, get_user_name, validate_refresh_token, generate_tokens, get_db_connection, release_db_connection
 from memory import add_message, build_llm_messages, clear_history
 from llm import call_ai_service, route_and_respond, format_response
 from prompts import build_system_prompt, build_format_prompt
@@ -37,6 +37,11 @@ def chat():
     user_msg = data.get("message")
     user_id = request.user["user_id"]
     tenant_id = request.user["tenant_city_id"]
+    
+    logger.info(f"--- DEBUG CHAT ---")
+    logger.info(f"User ID from Token: {user_id} (type: {type(user_id)})")
+    logger.info(f"Tenant ID from Token: {tenant_id}")
+    logger.info(f"Message: {user_msg}")
 
     if not user_msg:
         return jsonify({"error": "Mensagem vazia"}), 400
@@ -49,8 +54,11 @@ def chat():
     # 1. Construir mensagens com histórico conversacional
     #    O LLM recebe TUDO e decide sozinho (sem keywords!)
     # ──────────────────────────────────────────────────────────
-    is_admin = get_user_is_admin(user_id)
+    user_roles = request.user.get("roles", [])
+    is_admin = get_user_is_admin(user_id, roles=user_roles)
     limit_val = 50 if is_admin else 20
+    
+    logger.info(f"Final is_admin status for user {user_id}: {is_admin}")
 
     system_prompt = build_system_prompt(user_id, tenant_id, is_admin, limit_val)
     messages = build_llm_messages(system_prompt, user_id, user_msg)
@@ -91,7 +99,7 @@ def chat():
     logger.info(f"SQL Gerado (User {user_id}): {sql} | Pergunta: {user_msg}")
 
     # Validação de segurança
-    if not is_safe_sql(sql, tenant_id, is_admin):
+    if not is_safe_sql(sql, tenant_id, user_id, is_admin):
         error_msg = "Consulta não permitida por segurança."
         add_message(user_id, "assistant", error_msg)
         return jsonify({"response": error_msg})
@@ -149,6 +157,46 @@ def reset_chat():
     user_id = request.user["user_id"]
     clear_history(user_id)
     return jsonify({"status": "success", "message": "Contexto limpo"}), 200
+
+
+# ==============================================================================
+# ROTA — /auth/refresh
+# ==============================================================================
+
+@app.route("/auth/refresh", methods=["POST"])
+def refresh_token():
+    """Rota para renovar o accessToken usando um refreshToken."""
+    data = request.json or {}
+    refresh_token = data.get("refresh")
+    
+    if not refresh_token:
+        return jsonify({"error": "Refresh token ausente"}), 400
+        
+    payload = validate_refresh_token(refresh_token)
+    if not payload:
+        return jsonify({"error": "Token inválido ou expirado"}), 401
+        
+    user_id = payload.get("sub")
+    
+    # Para gerar um novo access completo, precisamos do tenant_id do banco
+    conn = get_db_connection()
+    tenant_id = None
+    roles = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT tenant_city_id, is_superuser, is_staff FROM auth_user WHERE id = %s", (user_id,))
+            res = cur.fetchone()
+            if res:
+                tenant_id = res[0]
+                if res[1]: roles.append("superuser")
+                if res[2]: roles.append("staff")
+    finally:
+        release_db_connection(conn)
+        
+    # Gera novos tokens
+    new_tokens = generate_tokens(user_id, tenant_id, roles)
+    
+    return jsonify(new_tokens), 200
 
 
 # ==============================================================================

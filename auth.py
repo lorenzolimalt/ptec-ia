@@ -3,6 +3,8 @@ Módulo de autenticação e autorização.
 JWT decorator, verificação de admin, rate limiting.
 """
 import logging
+import datetime
+from typing import Dict, Any, Optional
 from functools import wraps
 
 import jwt as pyjwt
@@ -12,6 +14,43 @@ from config import JWT_SECRET, JWT_ALGORITHM, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX,
 from database import get_db_connection, release_db_connection
 
 logger = logging.getLogger("SQLBot")
+
+# ==============================================================================
+# TOKEN GENERATION & VALIDATION
+# ==============================================================================
+
+def generate_tokens(user_id: Any, tenant_city_id: Any, roles: list = None) -> Dict[str, str]:
+    """Gera um par de tokens (Access e Refresh) compatível com o backend principal."""
+    access_payload = {
+        "sub": str(user_id),
+        "tenant_city_id": str(tenant_city_id) if tenant_city_id else None,
+        "roles": roles or [],
+        "iat": datetime.datetime.utcnow(),
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1) # 1 hora de access
+    }
+    
+    refresh_payload = {
+        "sub": str(user_id),
+        "iat": datetime.datetime.utcnow(),
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(days=7) # 7 dias de refresh
+    }
+    
+    access_token = pyjwt.encode(access_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    refresh_token = pyjwt.encode(refresh_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    
+    return {
+        "access": access_token,
+        "refresh": refresh_token
+    }
+
+def validate_refresh_token(token: str) -> Optional[Dict[str, Any]]:
+    """Valida o refresh token e retorna o payload."""
+    try:
+        payload = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except Exception as e:
+        logger.error(f"Refresh Token inválido: {e}")
+        return None
 
 
 # ==============================================================================
@@ -24,17 +63,34 @@ def jwt_required(f):
     def decorated(*args, **kwargs):
         auth = request.headers.get("Authorization")
         if not auth or not auth.startswith("Bearer "):
-            return jsonify({"error": "Token ausente"}), 401
+            return jsonify({
+                "detail": "Token ausente",
+                "code": "token_not_valid"
+            }), 401
         try:
             token = auth.split(" ")[1]
             payload = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"verify_sub": False})
+            logger.info(f"Token decodificado com sucesso: {payload}")
             request.user = {
                 "user_id": payload.get("sub"),
                 "tenant_city_id": payload.get("tenant_city_id"),
                 "roles": payload.get("roles", []),
             }
+        except pyjwt.ExpiredSignatureError:
+            return jsonify({
+                "detail": "Token expirado",
+                "code": "token_not_valid"
+            }), 401
+        except pyjwt.InvalidTokenError:
+            return jsonify({
+                "detail": "Token inválido",
+                "code": "token_not_valid"
+            }), 401
         except Exception:
-            return jsonify({"error": "Token inválido"}), 401
+            return jsonify({
+                "detail": "Erro ao processar token",
+                "code": "token_not_valid"
+            }), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -52,15 +108,25 @@ def rate_limit(tenant_id: str, user_id: int) -> bool:
     return current <= RATE_LIMIT_MAX
 
 
-def get_user_is_admin(user_id: int) -> bool:
-    """Verifica se o usuário é admin (superuser ou staff), com cache Redis de 5 min."""
+def get_user_is_admin(user_id: int, roles: list = None) -> bool:
+    """Verifica se o usuário é admin (via flags no DB ou roles no Token)."""
+    # 1. Verifica Roles do Token primeiro (mais rápido)
+    admin_roles = ['ADMIN', 'ADMIN_MASTER' 'SUPERUSER', 'staff', 'superuser']
+    if roles:
+        if any(role.upper() in [r.upper() for r in admin_roles] for role in roles):
+            logger.info(f"Usuário {user_id} reconhecido como ADMIN via Roles do Token.")
+            return True
+
+    # 2. Verifica Cache Redis
     cache_key = f"user:admin:{user_id}"
     cached = redis_client.get(cache_key)
     if cached is not None:
         return cached == "1"
 
-    conn = get_db_connection()
+    # 3. Verifica Banco de Dados
+    conn = None
     try:
+        conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT COALESCE(is_superuser, false) OR COALESCE(is_staff, false) FROM auth_user WHERE id = %s",
@@ -68,8 +134,13 @@ def get_user_is_admin(user_id: int) -> bool:
             )
             res = cur.fetchone()
             is_admin = bool(res[0]) if res else False
+            logger.info(f"Checagem DB para usuário {user_id}: is_admin={is_admin}")
+    except Exception as e:
+        logger.error(f"Erro ao verificar se usuário {user_id} é admin: {e}")
+        is_admin = False
     finally:
-        release_db_connection(conn)
+        if conn:
+            release_db_connection(conn)
 
     redis_client.setex(cache_key, 300, "1" if is_admin else "0")
     return is_admin

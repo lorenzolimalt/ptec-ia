@@ -22,8 +22,26 @@ logger = logging.getLogger("SQLBot")
 # ==============================================================================
 
 def get_db_connection():
-    """Obtém conexão do Pool."""
-    return pg_pool.getconn()
+    """Obtém conexão do Pool com validação simples."""
+    conn = pg_pool.getconn()
+    try:
+        # Verifica se a conexão ainda está ativa
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return conn
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        logger.warning("🔄 Conexão do pool estava inativa. Tentando obter uma nova...")
+        try:
+            conn.close()
+        except:
+            pass
+        # Aqui o ideal seria remover do pool, mas pg_pool.getconn() pode retornar a mesma se não for tratada.
+        # Recriamos a conexão manualmente para garantir.
+        import psycopg2
+        from config import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
+        return psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, database=DB_NAME, user=DB_USER, password=DB_PASS
+        )
 
 
 def release_db_connection(conn):
@@ -57,7 +75,7 @@ def clean_sql(sql_text: str) -> str:
 # VALIDAÇÃO DE SEGURANÇA
 # ==============================================================================
 
-def is_safe_sql(sql: str, tenant_id: str, is_admin: bool) -> bool:
+def is_safe_sql(sql: str, tenant_id: str, user_id: int, is_admin: bool) -> bool:
     """Valida se o SQL é seguro: somente SELECT, tabelas permitidas, filtro de tenant."""
     sql_clean = " ".join(sql.split())
     sql_upper = sql_clean.upper()
@@ -70,8 +88,19 @@ def is_safe_sql(sql: str, tenant_id: str, is_admin: bool) -> bool:
         return False
 
     if not is_admin:
-        if f"'{tenant_id}'" not in sql:
-            logger.warning(f"⛔ BLOQUEIO: Tentativa de burlar filtro de tenant. SQL: {sql}")
+        # Permite se tiver o filtro de tenant OU o filtro específico do ID do usuário logado
+        uid_str = str(user_id)
+        has_tenant_filter = f"'{tenant_id}'" in sql
+        
+        # Verifica u.id = 4276, u.id = '4276', etc.
+        user_id_patterns = [
+            f"u.id = {uid_str}", f"u.id={uid_str}",
+            f"u.id = '{uid_str}'", f"u.id='{uid_str}'"
+        ]
+        has_user_id_filter = any(p in sql for p in user_id_patterns)
+        
+        if not (has_tenant_filter or has_user_id_filter):
+            logger.warning(f"⛔ BLOQUEIO: Tentativa de burlar filtro de acesso (Tenant: {tenant_id}, User: {user_id}). SQL: {sql}")
             return False
 
     # Remove funções inofensivas para verificar tabelas

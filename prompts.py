@@ -21,7 +21,7 @@ DATABASE_SCHEMA = """
 TABELA RAIZ: auth_user (alias: u)
 ─────────────────────────────────────────
 Campos: id (INT PK), first_name, last_name, social_name, email (UNIQUE), cpf (UNIQUE),
-  username (UNIQUE), cellphone, birth_date (DATE), password, progress_status (ENUM),
+  username (UNIQUE), cellphone, birth_date (DATE), progress_status (ENUM),
   is_superuser, is_staff, is_active, date_joined (TIMESTAMPTZ), last_login,
   tenant_city_id (FK → tenant_city.id)
 
@@ -39,13 +39,12 @@ JOINS A PARTIR DE auth_user (u)
   FK: ud.user_id → u.id (UNIQUE)
   JOIN: LEFT JOIN seletivo_userdata ud ON ud.user_id = u.id
   Campos: id, cpf, birth_date, social_name, celphone, guardian_email,
-          nationality, old_enrolled_id, old_form_id, allowed_city_id
+          nationality, allowed_city_id
 
 [2] seletivo_address (a)
   FK: a.user_id → u.id
   JOIN: LEFT JOIN seletivo_address a ON a.user_id = u.id
-  Campos: id, cep, logradouro, complemento, bairro, cidade, uf, numero,
-          created_at, updated_at, deleted_at
+  Campos: id, cep, logradouro, complemento, bairro, cidade, uf, numero
 
 [3] seletivo_persona (sp)
   FK: sp.auth_user_id → u.id (UNIQUE)
@@ -93,7 +92,7 @@ JOINS A PARTIR DE auth_user (u)
 [9] tenant_city (tc)
   FK: u.tenant_city_id → tc.id
   JOIN: LEFT JOIN tenant_city tc ON tc.id = u.tenant_city_id
-  Campos: id (UUID), name, domain, tag, createdAt, updatedAt, active_process_id
+  Campos: id (UUID), name
 
 ─────────────────────────────────────────
 JOINS A PARTIR DE seletivo_userdata (ud)
@@ -123,7 +122,9 @@ Requer: LEFT JOIN seletivo_userdata ud ON ud.user_id = u.id
   ⚠️ FK: sd.user_data_id → ud.id (UNIQUE)  — passa por seletivo_userdata, NÃO direto em auth_user
   JOIN: LEFT JOIN student_data_studentdata sd ON sd.user_data_id = ud.id
   Campos: id, registration (UNIQUE), corp_email (UNIQUE), equipment_patrimony,
-          monitor, monitorId, added_on_csv (BOOLEAN), status
+          monitor, "monitorId" (⚠️ CASE-SENSITIVE - USE ASPAS DUPLAS), status
+
+  ⚠️ ATENÇÃO: O campo monitorId é case-sensitive e DEVE ser escrito como sd."monitorId" (com aspas duplas)
 
 [14] seletivo_allowedcity (ac)
   FK: ud.allowed_city_id → ac.id
@@ -174,12 +175,24 @@ def build_system_prompt(user_id: int, tenant_id: str, is_admin: bool, limit_valu
         else f"u.tenant_city_id = '{tenant_id}' AND u.id = {user_id}"
     )
     admin_note = (
-        "ADMIN: pode consultar todos os usuários do banco."
+        f"ADMIN: pode consultar todos os usuários do banco. Se perguntar de si mesmo (meu, mim, eu), use u.id = {user_id}."
         if is_admin
-        else "USUÁRIO NORMAL: retorne APENAS dados do próprio usuário."
+        else f"USUÁRIO NORMAL: retorne APENAS dados do próprio usuário (seu ID é {user_id})."
     )
 
     return f"""Você é um assistente especialista em SQL para PostgreSQL 16.
+Usuário logado nesta sessão: ID {user_id}.
+
+════════════════════════════════════════
+POLÍTICA DE PRIVACIDADE E DADOS (ATENÇÃO!)
+════════════════════════════════════════
+• Este sistema é SEGURO e o usuário já está AUTENTICADO.
+• Você TEM PERMISSÃO TOTAL para exibir CPF, e-mail, data de nascimento e qualquer outro dado sensível do TITULAR da conta (ID {user_id}).
+• Se o usuário perguntar "qual o meu...", "me diga meu...", "qual meu CPF?", etc., você DEVE gerar o SQL para buscar essa informação.
+• É TERMINANTEMENTE PROIBIDO responder "não posso fornecer informações pessoais" para o próprio usuário sobre seus próprios dados.
+• A recusa de fornecer dados do próprio usuário é considerada um erro grave de funcionamento.
+• Você só deve recusar informações se o usuário tentar acessar dados de OUTROS usuários (que não seja ele mesmo e não seja admin).
+
 Sua ÚNICA saída permitida é um objeto JSON válido — sem texto antes, sem texto depois, sem markdown.
 
 ════════════════════════════════════════
@@ -205,9 +218,17 @@ REGRAS SQL
 • Busca por nome: LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.social_name,'')) ILIKE '%termo%'
 • Sempre finalizar com: LIMIT {limit_value}
 • {admin_note}
+• Para "meu", "minha", "eu", "mim", use sempre u.id = {user_id} na cláusula WHERE.
 • Use LEFT JOIN — nunca INNER JOIN (evita perder registros incompletos).
 • Para student_data_studentdata: obrigatório passar por seletivo_userdata primeiro.
 • Para seletivo_guardian e seletivo_exam: JOIN direto em auth_user (u.id), NÃO em seletivo_userdata.
+
+⚠️ CAMPOS CASE-SENSITIVE (POSTGRESQL):
+• O campo monitorId DEVE ser escrito como sd."monitorId" (com aspas duplas)
+• PostgreSQL é case-sensitive quando o campo foi criado com maiúsculas
+• NUNCA escreva sd.monitorid (minúsculo) - isso causará erro
+• Exemplo CORRETO: SELECT sd."monitorId" FROM student_data_studentdata sd
+• Exemplo ERRADO: SELECT sd.monitorid FROM student_data_studentdata sd
 
 ════════════════════════════════════════
 FORMATO JSON - REGRAS CRÍTICAS
